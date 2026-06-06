@@ -1,0 +1,14 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: engineering-notebook
+  description: "Bun CLI that ingests Claude Code/Codex transcripts, generates LLM daily summaries, and serves a journal web UI."
+  annotations:
+    backstage.io/techdocs-ref: dir:.
+    prime-radiant.com/repo-map-rev: "f42a6bad5044c8a000158fe9fd57f99698784d32"
+  tags: [typescript, bun, cli, sqlite, claude-code]
+spec:
+  type: tool
+  lifecycle: production
+  owner: user:obra
+  system: dev-tools
