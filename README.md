@@ -9,7 +9,7 @@ Think of it as an automatic engineering diary — it watches your AI coding sess
 ## How It Works
 
 1. **Ingest** — Scans directories of Claude Code and Codex JSONL session files, parses out the human-readable conversation (stripping tool calls, thinking blocks, etc.), and stores them in SQLite.
-2. **Summarize** — Groups sessions by date and project, then uses Claude to write concise engineering journal entries with headlines, summaries, topics, and open questions.
+2. **Summarize** — Groups sessions by date and project, then uses the agy CLI (gemini-3.6-flash) to write concise engineering journal entries with headlines, summaries, topics, and open questions.
 3. **Serve** — Runs a web server with a browsable UI: daily journal, project timelines, calendar/Gantt view, session transcripts, full-text search, and an iCal feed.
 
 ## Install
@@ -29,7 +29,7 @@ bun link  # makes `engineering-notebook` available globally
 # 1. Ingest your sessions (defaults to ~/.claude/projects and ~/.codex/sessions)
 engineering-notebook ingest
 
-# 2. Generate journal summaries (requires ANTHROPIC_API_KEY)
+# 2. Generate journal summaries (requires agy CLI)
 engineering-notebook summarize --all
 
 # 3. Browse your journal
@@ -154,7 +154,7 @@ bun src/index.ts  # run from source
 
 - [Bun](https://bun.sh) — runtime, bundler, test runner, SQLite
 - [Hono](https://hono.dev) — web framework
-- [Anthropic SDK](https://github.com/anthropics/anthropic-sdk-typescript) — LLM summarization (Claude Haiku)
+- [Antigravity CLI (agy)](https://github.com/) — LLM summarization (gemini-3.6-flash)
 - [HTMX](https://htmx.org) — interactive web UI without a JS framework
 
 ## License

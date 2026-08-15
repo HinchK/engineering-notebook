@@ -8,9 +8,9 @@
 engineering-notebook scans directories of Claude Code and Codex JSONL session files, parses out the human-readable conversation, and stores it in SQLite. It then groups sessions by date and project and uses Claude to write concise journal entries (headlines, summaries, topics, open questions). A built-in web server serves a journal view, project timelines, calendar/Gantt view, full-text search, session transcripts, and an iCal feed.
 
 ## How it fits
-- Depends on: — (no internal prime-radiant-inc dependencies; uses the Anthropic API directly, no internal SDK)
+- Depends on: — (uses agy CLI for summaries)
 - Used by: —
-- External: Anthropic API (Claude, via ANTHROPIC_API_KEY) for summaries; reads Claude Code and Codex session files
+- External: agy CLI (gemini-3.6-flash) for summaries; reads Claude Code and Codex session files
 
 ## Runtime & data
 - Runs: Bun CLI (`ingest`, `summarize`, `serve`) and local web server on port 3000

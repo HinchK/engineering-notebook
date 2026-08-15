@@ -1,44 +1,70 @@
 import { Database } from "bun:sqlite";
 
-const SUMMARIZE_MODEL = "claude-haiku-4-5-20251001";
+const SUMMARIZE_MODEL = "gemini-3.6-flash";
 
-async function readStream(stream: ReadableStream<Uint8Array> | null): Promise<string> {
+async function readStream(
+  stream: ReadableStream<Uint8Array> | null,
+  exited?: Promise<number>
+): Promise<string> {
   if (!stream) return "";
-  return await new Response(stream).text();
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+
+  const exitSignal = exited
+    ? exited
+        .then(async () => {
+          await new Promise((r) => setTimeout(r, 100));
+          return { done: true as const, value: undefined };
+        })
+        .catch(() => ({ done: true as const, value: undefined }))
+    : null;
+
+  while (true) {
+    const res = exitSignal
+      ? await Promise.race([reader.read(), exitSignal])
+      : await reader.read();
+
+    if (res.done) {
+      if (res.value) chunks.push(res.value);
+      try {
+        await reader.cancel();
+      } catch {}
+      break;
+    }
+    chunks.push(res.value);
+  }
+
+  const decoder = new TextDecoder();
+  return (
+    chunks.map((c) => decoder.decode(c, { stream: true })).join("") +
+    decoder.decode()
+  );
 }
 
-async function getClaudeAuthIssue(): Promise<string | null> {
+async function getAgyAuthIssue(): Promise<string | null> {
   let proc: ReturnType<typeof Bun.spawn>;
   try {
-    proc = Bun.spawn(["claude", "auth", "status"], {
+    proc = Bun.spawn(["agy", "--version"], {
+      stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",
     });
   } catch {
-    return "Claude Code CLI is not installed or not on PATH. Install Claude Code and run `claude auth login`.";
+    return "Antigravity CLI (agy) is not installed or not on PATH. Install agy CLI and try again.";
   }
 
   const [stdout, stderr, exitCode] = await Promise.all([
-    readStream(proc.stdout as ReadableStream<Uint8Array> | null),
-    readStream(proc.stderr as ReadableStream<Uint8Array> | null),
+    readStream(proc.stdout as ReadableStream<Uint8Array> | null, proc.exited),
+    readStream(proc.stderr as ReadableStream<Uint8Array> | null, proc.exited),
     proc.exited,
   ]);
 
   if (exitCode !== 0) {
     const details = (stderr || stdout).trim();
     if (details) {
-      return `Claude auth check failed: ${details}`;
+      return `agy check failed: ${details}`;
     }
-    return "Claude auth check failed. Run `claude auth login` and try again.";
-  }
-
-  try {
-    const parsed = JSON.parse(stdout) as { loggedIn?: boolean; authMethod?: string };
-    if (parsed.loggedIn === false) {
-      return "Claude Code is not logged in. Run `claude auth login` and retry `engineering-notebook summarize --all`.";
-    }
-  } catch {
-    // If format changes, don't block summarize on parse failure.
+    return "agy check failed. Ensure agy CLI is installed and configured.";
   }
 
   return null;
@@ -46,8 +72,8 @@ async function getClaudeAuthIssue(): Promise<string | null> {
 
 function formatSummarizeError(err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err);
-  if (msg.includes("Claude Code process exited with code")) {
-    return `${msg}. This usually means Claude Code auth/session is unavailable. Run \`claude auth status\` then \`claude auth login\`.`;
+  if (msg.includes("agy process exited with code")) {
+    return `${msg}. Ensure agy CLI is installed and operational.`;
   }
   return msg;
 }
@@ -347,7 +373,8 @@ export function upsertJournalEntry(
     VALUES (?, ?, ?, '', ?, '[]', '[]', datetime('now'), ?)
     ON CONFLICT(date, project_id) DO UPDATE SET
       session_ids = excluded.session_ids,
-      generated_at = excluded.generated_at
+      generated_at = excluded.generated_at,
+      model_used = excluded.model_used
     `
     ).run(
       group.date,
@@ -370,7 +397,8 @@ export function upsertJournalEntry(
       topics = excluded.topics,
       open_questions = excluded.open_questions,
       generated_at = excluded.generated_at,
-      session_ids = excluded.session_ids
+      session_ids = excluded.session_ids,
+      model_used = excluded.model_used
     `
   ).run(
     group.date,
@@ -384,49 +412,48 @@ export function upsertJournalEntry(
   );
 }
 
-/** Run LLM summarization using Claude Agent SDK */
+/** Run LLM summarization using agy CLI and gemini-3.6-flash */
 export async function summarizeGroup(
   group: SessionGroup,
   db: Database,
   summaryInstructions?: string
 ): Promise<{ skipped: boolean; skipReason?: string }> {
-  const { query } = await import("@anthropic-ai/claude-agent-sdk");
   const prompt = buildSummaryPrompt(group, summaryInstructions);
 
-  let responseText = "";
-
-  const env = { ...process.env };
-  delete env.CLAUDECODE;
-
-  const result = query({
-    prompt,
-    options: {
-      model: SUMMARIZE_MODEL,
-      maxTurns: 1,
-      tools: [],
-      permissionMode: "bypassPermissions",
-      allowDangerouslySkipPermissions: true,
-      persistSession: false,
-      env,
-    },
-  });
-
-  for await (const message of result) {
-    if (message.type === "assistant") {
-      const content = message.message.content;
-      for (const block of content) {
-        if ("text" in block && typeof block.text === "string") {
-          responseText += block.text;
-        }
-      }
+  const proc = Bun.spawn(
+    [
+      "agy",
+      "-p",
+      prompt,
+      "--model",
+      SUMMARIZE_MODEL,
+      "--effort",
+      "medium",
+      "--disable-slash-commands",
+    ],
+    {
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
     }
+  );
+
+  const [stdout, stderr, exitCode] = await Promise.all([
+    readStream(proc.stdout as ReadableStream<Uint8Array> | null, proc.exited),
+    readStream(proc.stderr as ReadableStream<Uint8Array> | null, proc.exited),
+    proc.exited,
+  ]);
+
+  if (exitCode !== 0) {
+    const errText = (stderr || stdout).trim();
+    throw new Error(`agy process exited with code ${exitCode}${errText ? `: ${errText}` : ""}`);
   }
 
-  if (!responseText.trim()) {
-    throw new Error("Empty response from LLM");
+  if (!stdout.trim()) {
+    throw new Error("Empty response from agy CLI");
   }
 
-  const parsed = parseSummaryResponse(responseText);
+  const parsed = parseSummaryResponse(stdout);
 
   upsertJournalEntry(db, group, parsed);
   return { skipped: parsed.skipped, skipReason: parsed.skipped ? parsed.skipReason : undefined };
@@ -448,7 +475,7 @@ export async function summarizeAll(
   const errors: string[] = [];
 
   if (groups.length > 0) {
-    const authIssue = await getClaudeAuthIssue();
+    const authIssue = await getAgyAuthIssue();
     if (authIssue) {
       errors.push(authIssue);
       return { summarized, skipped, skipReasons, errors };
