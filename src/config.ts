@@ -23,7 +23,11 @@ export type Config = {
 export function defaultConfig(): Config {
   const configDir = join(homedir(), ".config", "engineering-notebook");
   return {
-    sources: ["~/.claude/projects", "~/.codex/sessions"],
+    sources: [
+      "~/.claude/projects",
+      "~/.codex/sessions",
+      "~/.gemini/antigravity-cli/conversations",
+    ],
     exclude: ["-private-tmp*", "*-skill-test-*"],
     db_path: join(configDir, "notebook.db"),
     port: 3000,
@@ -47,13 +51,22 @@ export function loadConfig(path?: string): Config {
   const parsed = JSON.parse(raw) as Partial<Config>;
   const config = { ...defaultConfig(), ...parsed };
 
-  // Migrate older default source list to include Codex sessions.
-  if (
-    Array.isArray(parsed.sources) &&
-    parsed.sources.length === 1 &&
-    parsed.sources[0] === "~/.claude/projects"
-  ) {
-    config.sources = defaultConfig().sources;
+  // Migrate older default source lists forward to the current default set
+  // (adds Codex, then Antigravity). Only fires when the user is still on a
+  // recognized older default — a customized list is left untouched.
+  if (Array.isArray(parsed.sources)) {
+    const oldDefaults = [
+      ["~/.claude/projects"],
+      ["~/.claude/projects", "~/.codex/sessions"],
+    ];
+    const isOldDefault = oldDefaults.some(
+      (d) =>
+        d.length === parsed.sources!.length &&
+        d.every((s, i) => s === parsed.sources![i])
+    );
+    if (isOldDefault) {
+      config.sources = defaultConfig().sources;
+    }
   }
 
   return config;

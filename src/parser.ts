@@ -1,5 +1,6 @@
 import { readFileSync } from "fs";
 import { basename } from "path";
+import { parseAntigravitySession } from "./antigravity";
 
 export type MessageRole = "user" | "assistant";
 
@@ -147,6 +148,38 @@ function extractCodexText(
   return texts.length > 0 ? texts.join("\n") : null;
 }
 
+/** Shared session -> markdown renderer (used by JSONL and Antigravity parsers). */
+export function buildMarkdown(opts: {
+  projectName: string;
+  projectPath: string;
+  gitBranch: string | null;
+  userDisplayName: string;
+  assistantDisplayName: string;
+  firstTimestamp: string | null;
+  lastTimestamp: string | null;
+  messages: ParsedMessage[];
+}): string {
+  const startTime = opts.firstTimestamp ? formatTime(opts.firstTimestamp) : "??:??";
+  const endTime = opts.lastTimestamp ? formatTime(opts.lastTimestamp) : "??:??";
+  const date = opts.firstTimestamp ? formatDate(opts.firstTimestamp) : "unknown";
+
+  let md = `# Session: ${opts.projectName}\n`;
+  md += `**Date:** ${date} ${startTime} - ${endTime}`;
+  if (opts.gitBranch) md += ` | **Branch:** ${opts.gitBranch}`;
+  md += ` | **Project:** ${opts.projectPath}\n\n---\n\n`;
+
+  for (const msg of opts.messages) {
+    const time = msg.timestamp.slice(0, 16).replace("T", " ");
+    const speaker =
+      msg.role === "user" ? opts.userDisplayName : opts.assistantDisplayName;
+    const firstLine = msg.text.split("\n")[0];
+    const truncated = msg.text.includes("\n") ? firstLine + " [...]" : firstLine;
+    md += `**${speaker} (${time}):** ${truncated}\n`;
+  }
+
+  return md;
+}
+
 function isCodexBoilerplateUserMessage(text: string): boolean {
   return (
     text.startsWith("# AGENTS.md instructions for ") ||
@@ -156,6 +189,11 @@ function isCodexBoilerplateUserMessage(text: string): boolean {
 }
 
 export function parseSession(filePath: string): ParsedSession {
+  if (filePath.endsWith(".db")) {
+    // Antigravity (`agy`) stores one SQLite DB per conversation.
+    return parseAntigravitySession(filePath);
+  }
+
   const raw = readFileSync(filePath, "utf-8");
   const lines = raw.trim().split("\n").filter(Boolean);
 
@@ -296,26 +334,16 @@ export function parseSession(filePath: string): ParsedSession {
     messages,
     messageCount: messages.length,
     toMarkdown() {
-      const startTime = firstTimestamp ? formatTime(firstTimestamp) : "??:??";
-      const endTime = lastTimestamp ? formatTime(lastTimestamp) : "??:??";
-      const date = firstTimestamp ? formatDate(firstTimestamp) : "unknown";
-
-      let md = `# Session: ${projectName}\n`;
-      md += `**Date:** ${date} ${startTime} - ${endTime}`;
-      if (gitBranch) md += ` | **Branch:** ${gitBranch}`;
-      md += ` | **Project:** ${projectPath}\n\n---\n\n`;
-
-      for (const msg of messages) {
-        const time = msg.timestamp.slice(0, 16).replace("T", " ");
-        const speaker = msg.role === "user" ? userDisplayName : assistantDisplayName;
-        const firstLine = msg.text.split("\n")[0];
-        const truncated = msg.text.includes("\n")
-          ? firstLine + " [...]"
-          : firstLine;
-        md += `**${speaker} (${time}):** ${truncated}\n`;
-      }
-
-      return md;
+      return buildMarkdown({
+        projectName,
+        projectPath,
+        gitBranch,
+        userDisplayName,
+        assistantDisplayName,
+        firstTimestamp,
+        lastTimestamp,
+        messages,
+      });
     },
   };
 }
