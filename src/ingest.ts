@@ -1,9 +1,18 @@
 import { readdirSync, statSync } from "fs";
-import { join, relative } from "path";
+import { basename, dirname, join, relative } from "path";
 import { Database } from "bun:sqlite";
 import { parseSession } from "./parser";
 
-/** Scan source directories for .jsonl session files, applying exclude patterns */
+/**
+ * Scan source directories for session files, applying exclude patterns.
+ *
+ * Picks up:
+ *  - `*.jsonl` (Claude Code, Codex) anywhere
+ *  - `*.db`    (Antigravity / `agy`) only inside a directory named `conversations`,
+ *              which is how `agy` lays them out — this keeps unrelated SQLite files
+ *              (including the notebook's own DB) out of the scan. `.db-wal` /
+ *              `.db-shm` sidecars are ignored.
+ */
 export function scanSources(
   sources: string[],
   exclude: string[]
@@ -48,12 +57,22 @@ export function scanSources(
 
         if (entry.endsWith(".jsonl")) {
           files.push(fullPath);
+        } else if (
+          entry.endsWith(".db") &&
+          basename(dirname(fullPath)) === "conversations"
+        ) {
+          files.push(fullPath);
         }
       }
     }
   }
 
   return files;
+}
+
+/** True for Antigravity conversation databases (re-parsed every run — they are mutable). */
+function isMutableSource(file: string): boolean {
+  return file.endsWith(".db");
 }
 
 /** Ingest session files into the database */
@@ -68,6 +87,9 @@ export function ingestSessions(
 
   const checkStmt = db.query("SELECT id FROM sessions WHERE source_path = ?");
   const checkSessionId = db.query("SELECT id FROM sessions WHERE id = ?");
+  const checkCounts = db.query(
+    "SELECT message_count, ended_at FROM sessions WHERE id = ?"
+  );
   const insertProject = db.prepare(`
     INSERT INTO projects (id, path, display_name, session_count)
     VALUES (?, ?, ?, 0)
@@ -85,7 +107,11 @@ export function ingestSessions(
   const deleteSession = db.prepare(`DELETE FROM sessions WHERE id = ?`);
 
   for (const file of files) {
-    if (!force) {
+    const mutable = isMutableSource(file);
+
+    // Mutable sources (Antigravity .db) are re-parsed every run; the skip-by-path
+    // fast path only applies to append-only JSONL files.
+    if (!force && !mutable) {
       const existing = checkStmt.get(file);
       if (existing) {
         skipped++;
@@ -101,19 +127,30 @@ export function ingestSessions(
         continue;
       }
 
-      // Skip if session ID already exists (e.g., same session in multiple project dirs)
+      // Session already ingested?
       if (!force) {
-        const existingById = checkSessionId.get(session.sessionId);
+        const existingById = checkCounts.get(session.sessionId) as
+          | { message_count: number; ended_at: string | null }
+          | null;
         if (existingById) {
-          skipped++;
-          continue;
+          const unchanged =
+            existingById.message_count === session.messageCount &&
+            existingById.ended_at === session.endedAt;
+          if (unchanged || !mutable) {
+            // JSONL: same session seen under multiple project dirs — skip.
+            // Mutable: nothing new since last run — skip.
+            skipped++;
+            continue;
+          }
+          // Mutable source grew — fall through and replace it below.
         }
       }
 
       const projectId = session.projectName;
+      const replaceExisting = force || (mutable && !!checkSessionId.get(session.sessionId));
 
       db.transaction(() => {
-        if (force) {
+        if (replaceExisting) {
           deleteConvo.run(session.sessionId);
           deleteSession.run(session.sessionId);
         }

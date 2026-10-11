@@ -18,15 +18,25 @@ describe("config", () => {
 
   test("defaultConfig has expected shape", () => {
     const config = defaultConfig();
-    expect(config.sources).toEqual(["~/.claude/projects", "~/.codex/sessions"]);
+    expect(config.sources).toEqual([
+      "~/.claude/projects",
+      "~/.codex/sessions",
+      "~/.gemini/antigravity-cli/conversations",
+    ]);
     expect(config.exclude).toContain("-private-tmp*");
     expect(config.port).toBe(3000);
     expect(config.db_path).toContain("notebook.db");
   });
 
+  const DEFAULT_SOURCES = [
+    "~/.claude/projects",
+    "~/.codex/sessions",
+    "~/.gemini/antigravity-cli/conversations",
+  ];
+
   test("loadConfig returns default when no file exists", () => {
     const config = loadConfig(join(tempDir, "nonexistent.json"));
-    expect(config.sources).toEqual(["~/.claude/projects", "~/.codex/sessions"]);
+    expect(config.sources).toEqual(DEFAULT_SOURCES);
   });
 
   test("saveConfig writes and loadConfig reads back", () => {
@@ -46,12 +56,34 @@ describe("config", () => {
     expect(loaded).toEqual(config);
   });
 
-  test("migrates legacy default sources to include Codex sessions", () => {
+  test("migrates the oldest legacy default (Claude only) forward", () => {
     const configPath = join(tempDir, "legacy-config.json");
     writeFileSync(configPath, JSON.stringify({ sources: ["~/.claude/projects"] }));
 
     const loaded = loadConfig(configPath);
-    expect(loaded.sources).toEqual(["~/.claude/projects", "~/.codex/sessions"]);
+    expect(loaded.sources).toEqual(DEFAULT_SOURCES);
+  });
+
+  test("migrates the Claude+Codex legacy default forward to include Antigravity", () => {
+    const configPath = join(tempDir, "legacy-config-2.json");
+    writeFileSync(
+      configPath,
+      JSON.stringify({ sources: ["~/.claude/projects", "~/.codex/sessions"] })
+    );
+
+    const loaded = loadConfig(configPath);
+    expect(loaded.sources).toEqual(DEFAULT_SOURCES);
+  });
+
+  test("does not migrate a custom multi-source config that omits Antigravity", () => {
+    const configPath = join(tempDir, "custom-multi.json");
+    writeFileSync(
+      configPath,
+      JSON.stringify({ sources: ["~/.claude/projects", "/my/other/path"] })
+    );
+
+    const loaded = loadConfig(configPath);
+    expect(loaded.sources).toEqual(["~/.claude/projects", "/my/other/path"]);
   });
 
   test("does not migrate custom single-source configs", () => {

@@ -1,9 +1,14 @@
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { describe, test, expect, beforeAll, beforeEach, afterEach } from "bun:test";
 import { scanSources, ingestSessions } from "./ingest";
 import { initDb, closeDb } from "./db";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, copyFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
+import { buildAntigravityFixture } from "../tests/fixtures/build-antigravity-fixture";
+
+beforeAll(() => {
+  buildAntigravityFixture();
+});
 
 
 describe("scanSources", () => {
@@ -49,6 +54,21 @@ describe("scanSources", () => {
     const files = scanSources([tempDir], []);
     expect(files.length).toBe(1);
     expect(files[0]).toContain("rollout-1.jsonl");
+  });
+
+  test("finds .db files only inside a 'conversations' directory", () => {
+    const convDir = join(tempDir, "antigravity-cli", "conversations");
+    const otherDir = join(tempDir, "somewhere-else");
+    mkdirSync(convDir, { recursive: true });
+    mkdirSync(otherDir, { recursive: true });
+    writeFileSync(join(convDir, "abc.db"), "");
+    writeFileSync(join(convDir, "abc.db-wal"), ""); // sidecar, ignored
+    writeFileSync(join(convDir, "abc.db-shm"), ""); // sidecar, ignored
+    writeFileSync(join(otherDir, "notebook.db"), ""); // unrelated SQLite file
+
+    const files = scanSources([tempDir], []);
+    expect(files).toHaveLength(1);
+    expect(files[0]).toContain(join("conversations", "abc.db"));
   });
 });
 
@@ -145,6 +165,94 @@ describe("ingestSessions", () => {
     ingestSessions([sessionFile], db);
     const session = db.query("SELECT is_subagent FROM sessions").get() as { is_subagent: number } | null;
     expect(session?.is_subagent).toBe(0);
+  });
+
+  test("ingests an Antigravity conversation .db", () => {
+    const fixturePath = join(
+      import.meta.dir,
+      "../tests/fixtures/test-antigravity-session-1.db"
+    );
+    const convDir = join(tempDir, "antigravity-cli", "conversations");
+    mkdirSync(convDir, { recursive: true });
+    const dbFile = join(convDir, "conv-1.db");
+    copyFileSync(fixturePath, dbFile);
+
+    const result = ingestSessions([dbFile], db);
+    expect(result.ingested).toBe(1);
+    expect(result.errors).toEqual([]);
+
+    const session = db
+      .query("SELECT id, project_path, version, message_count FROM sessions")
+      .get() as {
+      id: string;
+      project_path: string;
+      version: string;
+      message_count: number;
+    } | null;
+    expect(session?.id).toBe("22222222-2222-4222-8222-222222222222");
+    expect(session?.project_path).toBe("/Users/testuser/projects/fixtureapp");
+    expect(session?.version).toBe("Gemini 3.5 Flash (High)");
+    expect(session?.message_count).toBe(7);
+  });
+
+  test("re-ingests a mutable .db source when it has grown", () => {
+    const fixturePath = join(
+      import.meta.dir,
+      "../tests/fixtures/test-antigravity-session-1.db"
+    );
+    const convDir = join(tempDir, "antigravity-cli", "conversations");
+    mkdirSync(convDir, { recursive: true });
+    const dbFile = join(convDir, "conv-1.db");
+    copyFileSync(fixturePath, dbFile);
+
+    // First ingest.
+    expect(ingestSessions([dbFile], db).ingested).toBe(1);
+    // Nothing changed -> skipped.
+    const second = ingestSessions([dbFile], db);
+    expect(second.ingested).toBe(0);
+    expect(second.skipped).toBe(1);
+
+    // The conversation gains another assistant step (agy .db files are mutable).
+    const { Database } = require("bun:sqlite");
+    const conv = new Database(dbFile);
+    const text = "One more thing done.";
+    const t = Array.from(new TextEncoder().encode(text));
+    const uvarint = (n: number): number[] => {
+      const out: number[] = [];
+      let v = n;
+      while (v > 0x7f) {
+        out.push((v & 0x7f) | 0x80);
+        v >>>= 7;
+      }
+      out.push(v);
+      return out;
+    };
+    const ld = (f: number, b: number[]) => [
+      ...uvarint((f << 3) | 2),
+      ...uvarint(b.length),
+      ...b,
+    ];
+    // step_payload = { 1: 15, 20: { 1: text, 8: text } }
+    const payload = new Uint8Array([
+      ...uvarint((1 << 3) | 0),
+      15,
+      ...ld(20, [...ld(1, t), ...ld(8, t)]),
+    ]);
+    conv
+      .query(
+        "INSERT INTO steps (idx, step_type, status, step_payload, step_format) VALUES (99, 15, 5, ?, 0)"
+      )
+      .run(payload);
+    conv.close();
+
+    const third = ingestSessions([dbFile], db);
+    expect(third.ingested).toBe(1); // replaced
+
+    const session = db
+      .query("SELECT message_count FROM sessions")
+      .get() as { message_count: number };
+    expect(session.message_count).toBe(8);
+    expect(db.query("SELECT COUNT(*) c FROM sessions").get()).toEqual({ c: 1 });
   });
 
   test("ingests a Codex session file into the database", () => {
